@@ -25,21 +25,25 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install Advanced Downloader (yt-dlp)
+      - name: Install Advanced Downloader & Browser Impersonator
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-pip curl
           pip3 install --upgrade yt-dlp
+          # نصب وابستگی شبیه‌ساز مرورگر برای دور زدن کلودفلر
+          pip3 install curl_cffi
 
       - name: Download from Radio Javan Safely
         env:
           RJ_URL: ${{ github.event.inputs.podcast_url }}
         run: |
           mkdir -p podcasts
-          echo "Processing URL with yt-dlp: $RJ_URL"
+          echo "Processing URL with Browser Impersonation: $RJ_URL"
           
-          # ابزار yt-dlp خودش لینک‌های کوتاه rj.app را رمزگشایی کرده و سرور فعال را پیدا می‌کند
-          yt-dlp --no-cache-dir --retries 5 --no-playlist -o "podcasts/%(title)s.%(ext)s" "$RJ_URL"
+          # اجرای دانلودر در حالت شبیه‌سازی مرورگر کروم روی ویندوز برای فریب دادن کلودفلر
+          yt-dlp --no-cache-dir --retries 5 --no-playlist \
+            --impersonate chrome:windows \
+            -o "podcasts/%(title)s.%(ext)s" "$RJ_URL"
 
       - name: Save File and Commit to GitHub Repository
         run: |
@@ -55,7 +59,7 @@ jobs:
             if ! git diff --cached --quiet; then
               git commit -m "🎵 Sync: Downloaded from Radio Javan [skip ci]"
               git push origin HEAD:"$BRANCH" || true
-              echo "✅ فایل با نام اصلی خود پادکست در پوشه podcasts ذخیره شد."
+              echo "✅ فایل با موفقیت در پوشه podcasts ذخیره شد."
             else
               echo "تغییری برای ثبت وجود ندارد."
             fi
