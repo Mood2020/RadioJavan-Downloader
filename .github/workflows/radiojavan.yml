@@ -14,7 +14,7 @@ env:
 jobs:
   download-podcast:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: write
 
@@ -25,75 +25,43 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install Core Utilities
+      - name: Start Cloudflare WARP (Bypass Blocks & Cloudflare 403)
+        run: |
+          echo "Starting WARP for Radio Javan..."
+          docker network create warp-net || true
+          docker run -d --name warp --restart=always --network warp-net -p 1080:1080 --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 -v warp-data:/var/lib/cloudflare-warp caomingjun/warp
+          sleep 15
+
+      - name: Install Advanced Downloader & JS Engine
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl grep
+          sudo apt-get install -y python3-pip curl
+          # نصب موتور Deno جهت حل چالش‌های امنیتی جاوااسکریپت کلودفلر
+          curl -fsSL https://deno.land/install.sh | sh
+          export DENO_INSTALL="$HOME/.deno"
+          echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
+          pip3 install --upgrade yt-dlp
 
-      - name: Resolve and Download from Radio Javan
+      - name: Download from Radio Javan via Proxy
         env:
-          INPUT_URL: ${{ github.event.inputs.podcast_url }}
+          RJ_URL: ${{ github.event.inputs.podcast_url }}
         run: |
           mkdir -p podcasts
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          echo "Processing URL with WARP Proxy & Deno Engine: $RJ_URL"
           
-          echo "Processing URL: $INPUT_URL"
-          
-          # اگر لینک از نوع rj.app بود، آن را باز می‌کنیم تا لینک واقعی play.radiojavan پیدا شود
-          if [[ "$INPUT_URL" == *"rj.app"* ]]; then
-            echo "Detected short rj.app link. Resolving full play.radiojavan URL..."
-            RESOLVED_URL=$(curl -s -I -L -A "$USER_AGENT" "$INPUT_URL" | grep -i "location:" | tail -n 1 | awk '{print $2}' | tr -d '\r')
-            if [ -z "$RESOLVED_URL" ]; then
-              # راه حل دوم برای استخراج لینک از ریدایرکت‌های جاوااسکریپتی کلودفلر
-              RESOLVED_URL=$(curl -s -L -A "$USER_AGENT" "$INPUT_URL" | grep -oP 'window\.location\s*=\s*"\K[^"]+')
-            fi
-            if [ -n "$RESOLVED_URL" ]; then
-              INPUT_URL="$RESOLVED_URL"
-              echo "Successfully resolved to: $INPUT_URL"
-            fi
-          fi
+          # استفاده از پروکسی ساکس ۵ وارپ و شبیه‌سازی کامل هدرهای مرورگر واقعی
+          yt-dlp --proxy "socks5://127.0.0.1:1080" \
+            --no-cache-dir \
+            --retries 5 \
+            --no-playlist \
+            --js-runtimes deno \
+            --remote-components ejs:github \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            -o "podcasts/%(title)s.%(ext)s" "$RJ_URL"
 
-          # استخراج اسم پادکست (مثلاً majoon-25) از انتهای آدرس لینک اصلی
-          TRACK_NAME=$(echo "$INPUT_URL" | grep -oE '[^/]+$' | cut -d'?' -f1 | cut -d'#' -f1)
-          
-          if [ -z "$TRACK_NAME" ]; then
-            echo "❌ نتوانستم اسم پادکست را از لینک استخراج کنم."
-            exit 1
-          fi
-          
-          echo "🎯 Target Track Name identified as: $TRACK_NAME"
-          
-          # تست دامنه‌های جدید و فعال بارگذاری رادیو جوان (به ترتیب اولویت دیتاسنترها)
-          SUCCESS=false
-          for DOMAIN in "www.radiojavan.com" "media.rjplay.xyz" "host2.rjmusicmedia.xyz" "host1.rjmusicmedia.xyz"; do
-            DOWNLOAD_URL="https://${DOMAIN}/media/podcast/mp3-320/${TRACK_NAME}.mp3"
-            echo "Trying endpoint: $DOWNLOAD_URL"
-            
-            if curl -L -A "$USER_AGENT" -f "$DOWNLOAD_URL" -o "podcasts/${TRACK_NAME}_320k.mp3"; then
-              echo "✅ Download successful from $DOMAIN!"
-              SUCCESS=true
-              break
-            fi
-          done
-          
-          # اگر به عنوان پادکست دانلود نشد، ساختار موزیک معمولی (ریمیکس تک‌آهنگ) را روی دامنه جدید تست می‌کند
-          if [ "$SUCCESS" = false ]; then
-            echo "⚠️ به عنوان پادکست یافت نشد. تست به عنوان سینگل ترک/ریمیکس معمولی..."
-            for DOMAIN in "www.radiojavan.com" "media.rjplay.xyz"; do
-              DOWNLOAD_URL="https://${DOMAIN}/media/mp3/${TRACK_NAME}.mp3"
-              echo "Trying endpoint: $DOWNLOAD_URL"
-              if curl -L -A "$USER_AGENT" -f "$DOWNLOAD_URL" -o "podcasts/${TRACK_NAME}_320k.mp3"; then
-                echo "✅ Download successful as standard MP3 track!"
-                SUCCESS=true
-                break
-              fi
-            done
-          fi
-          
-          if [ "$SUCCESS" = false ]; then
-            echo "❌ خطا: دامنه‌های دانلود رادیو جوان پاسخگو نبودند یا نام آهنگ در سرور تغییر کرده است."
-            exit 1
-          fi
+      - name: Stop Cloudflare WARP
+        if: always()
+        run: docker stop warp && docker rm warp || true
 
       - name: Save File and Commit to GitHub Repository
         run: |
@@ -107,9 +75,9 @@ jobs:
           if [ -d "podcasts" ]; then
             git add podcasts/
             if ! git diff --cached --quiet; then
-              git commit -m "🎵 Sync: New Radio Javan Track [skip ci]"
+              git commit -m "🎵 Sync: Downloaded from Radio Javan [skip ci]"
               git push origin HEAD:"$BRANCH" || true
-              echo "✅ فایل با موفقیت در پوشه podcasts ریپازیتوری شما ذخیره شد."
+              echo "✅ فایل پادکست با موفقیت در پوشه podcasts ذخیره شد."
             else
               echo "تغییری برای ثبت وجود ندارد."
             fi
