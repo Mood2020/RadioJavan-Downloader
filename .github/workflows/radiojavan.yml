@@ -14,7 +14,7 @@ env:
 jobs:
   download-podcast:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     permissions:
       contents: write
 
@@ -25,43 +25,47 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Start Cloudflare WARP (Bypass Blocks & Cloudflare 403)
-        run: |
-          echo "Starting WARP for Radio Javan..."
-          docker network create warp-net || true
-          docker run -d --name warp --restart=always --network warp-net -p 1080:1080 --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 -v warp-data:/var/lib/cloudflare-warp caomingjun/warp
-          sleep 15
-
-      - name: Install Advanced Downloader & JS Engine
+      - name: Install Advanced Downloader & Patches
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-pip curl
-          # نصب موتور Deno جهت حل چالش‌های امنیتی جاوااسکریپت کلودفلر
-          curl -fsSL https://deno.land/install.sh | sh
-          export DENO_INSTALL="$HOME/.deno"
-          echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
+          sudo apt-get install -y python3-pip curl jq
           pip3 install --upgrade yt-dlp
 
-      - name: Download from Radio Javan via Proxy
+      - name: Normalize URL and Download Safely
         env:
-          RJ_URL: ${{ github.event.inputs.podcast_url }}
+          INPUT_URL: ${{ github.event.inputs.podcast_url }}
         run: |
           mkdir -p podcasts
-          echo "Processing URL with WARP Proxy & Deno Engine: $RJ_URL"
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
           
-          # استفاده از پروکسی ساکس ۵ وارپ و شبیه‌سازی کامل هدرهای مرورگر واقعی
-          yt-dlp --proxy "socks5://127.0.0.1:1080" \
-            --no-cache-dir \
+          echo "Original Input URL: $INPUT_URL"
+          
+          # ۱. تبدیل و بومی‌سازی انواع لینک‌های جدید و کوتاه رادیو جوان به ساختار استاندارد قابل فهم برای yt-dlp
+          if [[ "$INPUT_URL" == *"play.radiojavan.com/podcast/"* ]]; then
+            TRACK_NAME=$(echo "$INPUT_URL" | grep -oE 'podcast/[^/]+' | cut -d'/' -f2 | cut -d'?' -f1)
+            FINAL_URL="https://www.radiojavan.com/podcasts/podcast/${TRACK_NAME}"
+          elif [[ "$INPUT_URL" == *"play.radiojavan.com/mp3/"* ]]; then
+            TRACK_NAME=$(echo "$INPUT_URL" | grep -oE 'mp3/[^/]+' | cut -d'/' -f2 | cut -d'?' -f1)
+            FINAL_URL="https://www.radiojavan.com/mp3s/mp3/${TRACK_NAME}"
+          elif [[ "$INPUT_URL" == *"rj.app/p/"* ]]; then
+            echo "❌ لینک‌های کوتاه rj.app به دلیل سپر امنیتی شدید کلودفلر مستقیماً روی سرورهای ابری باز نمی‌شوند."
+            echo "💡 لطفاً لینک کامل پادکست را از مرورگر کپی کنید (مانند نمونه play.radiojavan.com)."
+            exit 1
+          else
+            FINAL_URL="$INPUT_URL"
+          fi
+          
+          echo "🎯 Normalized URL for Extractor: $FINAL_URL"
+          
+          # ۲. اجرای مستقیم دانلود با هدرهای تزریقی و شبیه‌سازی درخواست‌های موبایلی/وب
+          yt-dlp --no-cache-dir \
             --retries 5 \
             --no-playlist \
-            --js-runtimes deno \
-            --remote-components ejs:github \
-            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-            -o "podcasts/%(title)s.%(ext)s" "$RJ_URL"
-
-      - name: Stop Cloudflare WARP
-        if: always()
-        run: docker stop warp && docker rm warp || true
+            --add-header "User-Agent:$USER_AGENT" \
+            --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" \
+            --add-header "Accept-Language:en-US,en;q=0.5" \
+            --add-header "Referer:https://www.radiojavan.com/" \
+            -o "podcasts/%(title)s.%(ext)s" "$FINAL_URL"
 
       - name: Save File and Commit to GitHub Repository
         run: |
@@ -77,8 +81,8 @@ jobs:
             if ! git diff --cached --quiet; then
               git commit -m "🎵 Sync: Downloaded from Radio Javan [skip ci]"
               git push origin HEAD:"$BRANCH" || true
-              echo "✅ فایل پادکست با موفقیت در پوشه podcasts ذخیره شد."
+              echo "✅ فایل با موفقیت در پوشه podcasts ذخیره شد."
             else
-              echo "تغییری برای ثبت وجود ندارد."
+              echo "فایل جدیدی یافت نشد یا تغییرات ذخیره نشده است."
             fi
           fi
