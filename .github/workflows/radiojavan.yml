@@ -35,42 +35,54 @@ jobs:
           INPUT_URL: ${{ github.event.inputs.podcast_url }}
         run: |
           mkdir -p podcasts
-          echo "Processing URL: $INPUT_URL"
-          
-          # ۱. شبیه‌سازی مرورگر با هدرهای استاندارد برای گرفتن کد اختصاصی پادکست (حتی برای لینک‌های کوتاه rj.app)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           
-          echo "Resolving final track ID..."
-          PAGE_SOURCE=$(curl -s -L -A "$USER_AGENT" "$INPUT_URL")
+          echo "Processing URL: $INPUT_URL"
           
-          # استخراج نام یا آیدی پادکست از متاتگ‌ها یا ساختار صفحه رادیو جوان
-          TRACK_ID=$(echo "$PAGE_SOURCE" | grep -oP 'text/html; URL=\K[^"]+' | grep -oE '[^/]+$' | cut -d'?' -f1)
+          # اگر لینک از نوع rj.app بود، آن را باز می‌کنیم تا لینک واقعی play.radiojavan پیدا شود
+          if [[ "$INPUT_URL" == *"rj.app"* ]]; then
+            echo "Detected short rj.app link. Resolving full play.radiojavan URL..."
+            RESOLVED_URL=$(curl -s -I -L -A "$USER_AGENT" "$INPUT_URL" | grep -i "location:" | tail -n 1 | awk '{print $2}' | tr -d '\r')
+            if [ -z "$RESOLVED_URL" ]; then
+              # راه حل دوم برای استخراج لینک از ریدایرکت‌های جاوااسکریپتی کلودفلر
+              RESOLVED_URL=$(curl -s -L -A "$USER_AGENT" "$INPUT_URL" | grep -oP 'window\.location\s*=\s*"\K[^"]+')
+            fi
+            if [ -n "$RESOLVED_URL" ]; then
+              INPUT_URL="$RESOLVED_URL"
+              echo "Successfully resolved to: $INPUT_URL"
+            fi
+          fi
+
+          # استخراج اسم پادکست (مثلاً majoon-25) از انتهای آدرس لینک اصلی
+          TRACK_NAME=$(echo "$INPUT_URL" | grep -oE '[^/]+$' | cut -d'?' -f1 | cut -d'#' -f1)
           
-          if [ -z "$TRACK_ID" ]; then
-            TRACK_ID=$(echo "$INPUT_URL" | grep -oE '[^/]+$' | cut -d'?' -f1)
+          if [ -z "$TRACK_NAME" ]; then
+            echo "❌ نتوانستم اسم پادکست را از لینک استخراج کنم."
+            exit 1
           fi
           
-          echo "Target Track ID identified as: $TRACK_ID"
+          echo "🎯 Target Track Name identified as: $TRACK_NAME"
           
-          # ۲. تلاش برای دانلود مستقیم کیفیت ۳۲۰ از سرورهای اصلی با هدرهای فریب‌دهنده مرورگر
+          # تست دامنه‌های جدید و فعال بارگذاری رادیو جوان (به ترتیب اولویت دیتاسنترها)
           SUCCESS=false
-          for SERVER_NUM in 2 1 3 4; do
-            DOWNLOAD_URL="https://host${SERVER_NUM}.rjmusicmedia.com/media/podcast/mp3-320/${TRACK_ID}.mp3"
-            echo "Trying Server ${SERVER_NUM}: $DOWNLOAD_URL"
+          for DOMAIN in "www.radiojavan.com" "media.rjplay.xyz" "host2.rjmusicmedia.xyz" "host1.rjmusicmedia.xyz"; do
+            DOWNLOAD_URL="https://${DOMAIN}/media/podcast/mp3-320/${TRACK_NAME}.mp3"
+            echo "Trying endpoint: $DOWNLOAD_URL"
             
-            # دانلود مستقیم فایل صوتی بدون درگیر شدن با ساختار yt-dlp
-            if curl -L -A "$USER_AGENT" -f "$DOWNLOAD_URL" -o "podcasts/${TRACK_ID}_320k.mp3"; then
-              echo "✅ Download successful from Server ${SERVER_NUM}!"
+            if curl -L -A "$USER_AGENT" -f "$DOWNLOAD_URL" -o "podcasts/${TRACK_NAME}_320k.mp3"; then
+              echo "✅ Download successful from $DOMAIN!"
               SUCCESS=true
               break
             fi
           done
           
+          # اگر به عنوان پادکست دانلود نشد، ساختار موزیک معمولی (ریمیکس تک‌آهنگ) را روی دامنه جدید تست می‌کند
           if [ "$SUCCESS" = false ]; then
-            echo "❌ تمام سرورهای پادکست با خطا مواجه شدند. در حال تست ساختار موزیک معمولی..."
-            for SERVER_NUM in 2 1 3 4; do
-              DOWNLOAD_URL="https://host${SERVER_NUM}.rjmusicmedia.com/media/mp3/${TRACK_ID}.mp3"
-              if curl -L -A "$USER_AGENT" -f "$DOWNLOAD_URL" -o "podcasts/${TRACK_ID}_320k.mp3"; then
+            echo "⚠️ به عنوان پادکست یافت نشد. تست به عنوان سینگل ترک/ریمیکس معمولی..."
+            for DOMAIN in "www.radiojavan.com" "media.rjplay.xyz"; do
+              DOWNLOAD_URL="https://${DOMAIN}/media/mp3/${TRACK_NAME}.mp3"
+              echo "Trying endpoint: $DOWNLOAD_URL"
+              if curl -L -A "$USER_AGENT" -f "$DOWNLOAD_URL" -o "podcasts/${TRACK_NAME}_320k.mp3"; then
                 echo "✅ Download successful as standard MP3 track!"
                 SUCCESS=true
                 break
@@ -79,7 +91,7 @@ jobs:
           fi
           
           if [ "$SUCCESS" = false ]; then
-            echo "Error: Could not resolve or download media asset."
+            echo "❌ خطا: دامنه‌های دانلود رادیو جوان پاسخگو نبودند یا نام آهنگ در سرور تغییر کرده است."
             exit 1
           fi
 
