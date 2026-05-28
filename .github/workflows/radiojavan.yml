@@ -25,25 +25,63 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install Advanced Downloader & Browser Impersonator
+      - name: Install Core Utilities
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-pip curl
-          pip3 install --upgrade yt-dlp
-          # نصب وابستگی شبیه‌ساز مرورگر برای دور زدن کلودفلر
-          pip3 install curl_cffi
+          sudo apt-get install -y curl grep
 
-      - name: Download from Radio Javan Safely
+      - name: Resolve and Download from Radio Javan
         env:
-          RJ_URL: ${{ github.event.inputs.podcast_url }}
+          INPUT_URL: ${{ github.event.inputs.podcast_url }}
         run: |
           mkdir -p podcasts
-          echo "Processing URL with Browser Impersonation: $RJ_URL"
+          echo "Processing URL: $INPUT_URL"
           
-          # اجرای دانلودر در حالت شبیه‌سازی مرورگر کروم روی ویندوز برای فریب دادن کلودفلر
-          yt-dlp --no-cache-dir --retries 5 --no-playlist \
-            --impersonate chrome:windows \
-            -o "podcasts/%(title)s.%(ext)s" "$RJ_URL"
+          # ۱. شبیه‌سازی مرورگر با هدرهای استاندارد برای گرفتن کد اختصاصی پادکست (حتی برای لینک‌های کوتاه rj.app)
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          
+          echo "Resolving final track ID..."
+          PAGE_SOURCE=$(curl -s -L -A "$USER_AGENT" "$INPUT_URL")
+          
+          # استخراج نام یا آیدی پادکست از متاتگ‌ها یا ساختار صفحه رادیو جوان
+          TRACK_ID=$(echo "$PAGE_SOURCE" | grep -oP 'text/html; URL=\K[^"]+' | grep -oE '[^/]+$' | cut -d'?' -f1)
+          
+          if [ -z "$TRACK_ID" ]; then
+            TRACK_ID=$(echo "$INPUT_URL" | grep -oE '[^/]+$' | cut -d'?' -f1)
+          fi
+          
+          echo "Target Track ID identified as: $TRACK_ID"
+          
+          # ۲. تلاش برای دانلود مستقیم کیفیت ۳۲۰ از سرورهای اصلی با هدرهای فریب‌دهنده مرورگر
+          SUCCESS=false
+          for SERVER_NUM in 2 1 3 4; do
+            DOWNLOAD_URL="https://host${SERVER_NUM}.rjmusicmedia.com/media/podcast/mp3-320/${TRACK_ID}.mp3"
+            echo "Trying Server ${SERVER_NUM}: $DOWNLOAD_URL"
+            
+            # دانلود مستقیم فایل صوتی بدون درگیر شدن با ساختار yt-dlp
+            if curl -L -A "$USER_AGENT" -f "$DOWNLOAD_URL" -o "podcasts/${TRACK_ID}_320k.mp3"; then
+              echo "✅ Download successful from Server ${SERVER_NUM}!"
+              SUCCESS=true
+              break
+            fi
+          done
+          
+          if [ "$SUCCESS" = false ]; then
+            echo "❌ تمام سرورهای پادکست با خطا مواجه شدند. در حال تست ساختار موزیک معمولی..."
+            for SERVER_NUM in 2 1 3 4; do
+              DOWNLOAD_URL="https://host${SERVER_NUM}.rjmusicmedia.com/media/mp3/${TRACK_ID}.mp3"
+              if curl -L -A "$USER_AGENT" -f "$DOWNLOAD_URL" -o "podcasts/${TRACK_ID}_320k.mp3"; then
+                echo "✅ Download successful as standard MP3 track!"
+                SUCCESS=true
+                break
+              fi
+            done
+          fi
+          
+          if [ "$SUCCESS" = false ]; then
+            echo "Error: Could not resolve or download media asset."
+            exit 1
+          fi
 
       - name: Save File and Commit to GitHub Repository
         run: |
@@ -57,9 +95,9 @@ jobs:
           if [ -d "podcasts" ]; then
             git add podcasts/
             if ! git diff --cached --quiet; then
-              git commit -m "🎵 Sync: Downloaded from Radio Javan [skip ci]"
+              git commit -m "🎵 Sync: New Radio Javan Track [skip ci]"
               git push origin HEAD:"$BRANCH" || true
-              echo "✅ فایل با موفقیت در پوشه podcasts ذخیره شد."
+              echo "✅ فایل با موفقیت در پوشه podcasts ریپازیتوری شما ذخیره شد."
             else
               echo "تغییری برای ثبت وجود ندارد."
             fi
