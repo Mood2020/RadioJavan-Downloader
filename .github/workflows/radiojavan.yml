@@ -1,0 +1,84 @@
+name: 🎵 Radio Javan Independent Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      podcast_url:
+        description: '🔗 لینک پادکست یا ریمیکس رادیو جوان'
+        required: true
+        type: string
+      quality:
+        description: '🚀 کیفیت صدا'
+        required: true
+        default: '320'
+        type: choice
+        options:
+          - '320'
+          - '192'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  download-podcast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Extract and Download from Radio Javan
+        env:
+          RJ_URL: ${{ github.event.inputs.podcast_url }}
+          QUALITY: ${{ github.event.inputs.quality }}
+        run: |
+          mkdir -p podcasts
+          echo "Processing URL: $RJ_URL"
+          
+          # استخراج نام دقیق پادکست از انتهای آدرس URL
+          PODCAST_NAME=$(echo "$RJ_URL" | grep -oE '[^/]+$' | cut -d'?' -f1)
+          if [ -z "$PODCAST_NAME" ]; then
+            PODCAST_NAME="rj_audio_$(date +%s)"
+          fi
+          
+          # ساخت لینک دانلود مستقیم بر اساس گیت و ساختار رادیو جوان
+          DIRECT_DOWNLOAD_URL="https://host2.rjmusicmedia.com/media/podcast/mp3-${QUALITY}/${PODCAST_NAME}.mp3"
+          echo "Downloading from: $DIRECT_DOWNLOAD_URL"
+          
+          # دانلود مستقیم روی سرور با قابلیت سوئیچ روی سرور پشتیبان در صورت خطا
+          curl -L -f "$DIRECT_DOWNLOAD_URL" -o "podcasts/${PODCAST_NAME}_${QUALITY}k.mp3" || {
+            echo "⚠️ سرور اول پاسخ نداد. تلاش با سرور پشتیبان..."
+            ALTERNATIVE_URL="https://host1.rjmusicmedia.com/media/podcast/mp3-${QUALITY}/${PODCAST_NAME}.mp3"
+            curl -L -f "$ALTERNATIVE_URL" -o "podcasts/${PODCAST_NAME}_${QUALITY}k.mp3"
+          }
+
+      - name: Save File and Commit to GitHub Repository
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          
+          git fetch origin "$BRANCH"
+          git reset --hard origin/"$BRANCH"
+          
+          if [ -d "podcasts" ]; then
+            git add podcasts/
+            if ! git diff --cached --quiet; then
+              git commit -m "🎵 Sync: Added ${GITHUB_RUN_NUMBER} Radio Javan track [skip ci]"
+              git push origin HEAD:"$BRANCH" || true
+              echo "✅ فایل با موفقیت در پوشه podcasts ذخیره شد."
+            else
+              echo "تغییری برای ثبت وجود ندارد."
+            fi
+          fi
