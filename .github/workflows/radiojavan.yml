@@ -4,17 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       podcast_url:
-        description: '🔗 لینک پادکست یا ریمیکس رادیو جوان'
+        description: '🔗 لینک پادکست، ریمیکس یا آهنگ رادیو جوان'
         required: true
         type: string
-      quality:
-        description: '🚀 کیفیت صدا'
-        required: true
-        default: '320'
-        type: choice
-        options:
-          - '320'
-          - '192'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -33,35 +25,21 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install Dependencies
+      - name: Install Advanced Downloader (yt-dlp)
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl
+          sudo apt-get install -y python3-pip curl
+          pip3 install --upgrade yt-dlp
 
-      - name: Extract and Download from Radio Javan
+      - name: Download from Radio Javan Safely
         env:
           RJ_URL: ${{ github.event.inputs.podcast_url }}
-          QUALITY: ${{ github.event.inputs.quality }}
         run: |
           mkdir -p podcasts
-          echo "Processing URL: $RJ_URL"
+          echo "Processing URL with yt-dlp: $RJ_URL"
           
-          # استخراج نام دقیق پادکست از انتهای آدرس URL
-          PODCAST_NAME=$(echo "$RJ_URL" | grep -oE '[^/]+$' | cut -d'?' -f1)
-          if [ -z "$PODCAST_NAME" ]; then
-            PODCAST_NAME="rj_audio_$(date +%s)"
-          fi
-          
-          # ساخت لینک دانلود مستقیم بر اساس گیت و ساختار رادیو جوان
-          DIRECT_DOWNLOAD_URL="https://host2.rjmusicmedia.com/media/podcast/mp3-${QUALITY}/${PODCAST_NAME}.mp3"
-          echo "Downloading from: $DIRECT_DOWNLOAD_URL"
-          
-          # دانلود مستقیم روی سرور با قابلیت سوئیچ روی سرور پشتیبان در صورت خطا
-          curl -L -f "$DIRECT_DOWNLOAD_URL" -o "podcasts/${PODCAST_NAME}_${QUALITY}k.mp3" || {
-            echo "⚠️ سرور اول پاسخ نداد. تلاش با سرور پشتیبان..."
-            ALTERNATIVE_URL="https://host1.rjmusicmedia.com/media/podcast/mp3-${QUALITY}/${PODCAST_NAME}.mp3"
-            curl -L -f "$ALTERNATIVE_URL" -o "podcasts/${PODCAST_NAME}_${QUALITY}k.mp3"
-          }
+          # ابزار yt-dlp خودش لینک‌های کوتاه rj.app را رمزگشایی کرده و سرور فعال را پیدا می‌کند
+          yt-dlp --no-cache-dir --retries 5 --no-playlist -o "podcasts/%(title)s.%(ext)s" "$RJ_URL"
 
       - name: Save File and Commit to GitHub Repository
         run: |
@@ -75,9 +53,9 @@ jobs:
           if [ -d "podcasts" ]; then
             git add podcasts/
             if ! git diff --cached --quiet; then
-              git commit -m "🎵 Sync: Added ${GITHUB_RUN_NUMBER} Radio Javan track [skip ci]"
+              git commit -m "🎵 Sync: Downloaded from Radio Javan [skip ci]"
               git push origin HEAD:"$BRANCH" || true
-              echo "✅ فایل با موفقیت در پوشه podcasts ذخیره شد."
+              echo "✅ فایل با نام اصلی خود پادکست در پوشه podcasts ذخیره شد."
             else
               echo "تغییری برای ثبت وجود ندارد."
             fi
